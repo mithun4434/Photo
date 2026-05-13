@@ -1,0 +1,465 @@
+import { useState, useEffect, useRef } from "react";
+import { useAuth } from "../hooks/use-auth";
+import { supabase } from "../lib/supabase";
+import Navbar from "@/components/layout/Navbar";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { UploadCloud, FileImage, Target, Trophy, Info, RefreshCw, Image as ImageIcon, CheckCircle2, Circle } from "lucide-react";
+import * as motion from "motion/react-client";
+import { Link } from "react-router";
+
+export default function MemberDashboard() {
+  const { user } = useAuth();
+  const [folders, setFolders] = useState<{id: string, name: string}[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState<string>("");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [globalStats, setGlobalStats] = useState({ totalUploaded: 0, overallTarget: 0 });
+  const [myUploads, setMyUploads] = useState<any[]>([]);
+  const [myJobs, setMyJobs] = useState<any[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Fetch initial data
+    const fetchGlobalStats = async () => {
+      const { data, error } = await supabase.from('teamSettings').select('*').eq('id', 'info').single();
+      const { data: usersData } = await supabase.from('users').select('uploadedCount, uploaded_count');
+      const total = (usersData || []).reduce((acc, u) => acc + (u.uploadedCount || u.uploaded_count || 0), 0);
+      
+      if (data) {
+         setGlobalStats(prev => ({
+           totalUploaded: total,
+           overallTarget: data.overallTarget || data.overall_target || 0
+         }));
+      }
+    };
+    
+    const fetchMyUploads = async () => {
+      const { data, error } = await supabase
+        .from('uploads')
+        .select('*')
+        .eq('userId', user.id)
+        .order('uploadedAt', { ascending: false })
+        .limit(10);
+      if (data) setMyUploads(data);
+    };
+
+    const fetchMyJobs = async () => {
+      const { data, error } = await supabase
+        .from('jobs')
+        .select('*')
+        .eq('assignedTo', user.id)
+        .order('createdAt', { ascending: false });
+      if (data) setMyJobs(data);
+    };
+
+    const fetchFolders = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData?.session?.access_token;
+        const res = await fetch('/api/folders', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (res.ok) {
+           setFolders(json.folders || []);
+           if (json.folders?.length > 0) {
+              setSelectedFolderId(json.folders[0].id);
+           }
+        }
+      } catch (e) {
+        console.error("Failed to fetch folders", e);
+      }
+    };
+
+    fetchGlobalStats();
+    fetchMyUploads();
+    fetchMyJobs();
+    fetchFolders();
+
+    // Listen to real-time changes
+    const teamChannel = supabase.channel('schema-db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'teamSettings' }, (payload) => {
+        if (payload.new && (payload.new as any).id === 'info') {
+          const newData = payload.new as any;
+          setGlobalStats(prev => ({
+             ...prev,
+             overallTarget: newData.overallTarget || newData.overall_target || 0
+          }));
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+        fetchGlobalStats();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'uploads', filter: `userId=eq.${user?.id}` }, (payload) => {
+        fetchMyUploads(); // Refresh to maintain order and limit
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `assignedTo=eq.${user.id}` }, (payload) => {
+        fetchMyJobs();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(teamChannel);
+    };
+  }, [user]);
+
+  const handleMarkJobComplete = async (jobId: string) => {
+    try {
+      const { error } = await supabase.from('jobs').update({ status: 'completed' }).eq('id', jobId);
+      if (error) throw error;
+      toast.success("Task marked as completed!");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to complete task");
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    await uploadFiles(e.target.files);
+  };
+
+  const syncWithDrive = async () => {
+    if (!user) return;
+    setIsSyncing(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      
+      const res = await fetch(`/api/sync/${user.id}`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Sync failed");
+      toast.success(`Synced successfully. Total photos: ${data.count}`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to sync");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim() || !user) return;
+    setIsCreatingFolder(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      
+      const res = await fetch("/api/folders", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ name: newFolderName, parentId: selectedFolderId })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create folder");
+      
+      toast.success("Folder created!");
+      
+      const currentParent = folders.find(f => f.id === selectedFolderId);
+      const parentPrefix = currentParent && currentParent.name !== 'Root Folder' ? `${currentParent.name}/` : '';
+      
+      const newFolderObj = { id: data.folder.id, name: `${parentPrefix}${data.folder.name}` };
+      setFolders(prev => [...prev, newFolderObj]);
+      setSelectedFolderId(data.folder.id);
+      setNewFolderName("");
+      
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create folder");
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  };
+
+  const uploadFiles = async (files: FileList) => {
+    if (!user) return;
+    setIsUploading(true);
+    
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("photos", files[i]);
+      }
+      
+      if (selectedFolderId) {
+        formData.append("targetFolderId", selectedFolderId);
+      }
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Upload failed");
+      }
+
+      toast.success(`Successfully uploaded ${data.count} photos!`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    } catch (err: any) {
+      toast.error(err.message || "Failed to upload photos");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  if (!user) return null;
+
+  const targetProgress = user.personalTarget > 0 ? Math.min((user.uploadedCount / user.personalTarget) * 100, 100) : 0;
+  const remaining = Math.max(user.personalTarget - user.uploadedCount, 0);
+
+  const teamProgress = globalStats.overallTarget > 0 ? Math.min((globalStats.totalUploaded / globalStats.overallTarget) * 100, 100) : 0;
+
+  return (
+    <>
+      <Navbar />
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+        
+        <header className="flex justify-between items-start mb-8">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-white">Welcome back, {user.name || "Member"}</h1>
+            <p className="text-white/70 mt-1">Track your progress and upload new photos here.</p>
+          </div>
+          <Button onClick={syncWithDrive} disabled={isSyncing} variant="outline" className="gap-2">
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+            Sync
+          </Button>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            
+            {/* Upload Area */}
+            <Card className="border-dashed border-2 bg-neutral-50/50">
+              <CardContent className="p-8 flex flex-col items-center justify-center text-center">
+                <div className="bg-primary/10 p-4 rounded-full mb-4">
+                  <UploadCloud className="w-8 h-8 text-primary" />
+                </div>
+                <h3 className="text-lg font-semibold mb-1">Upload Team Photos</h3>
+                <p className="text-sm text-neutral-500 mb-6 max-w-sm">
+                  Drag and drop your photos here, or click to select files. JPG, PNG, HEIC are supported up to 50MB each.
+                </p>
+                <div className="w-full max-w-sm mb-4 text-left">
+                  <label className="text-sm font-medium mb-1 block">Upload Destination</label>
+                  <select 
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    value={selectedFolderId}
+                    onChange={(e) => setSelectedFolderId(e.target.value)}
+                  >
+                    {folders.map((f, idx) => <option key={`${f.id}-${idx}`} value={f.id}>{f.name}</option>)}
+                  </select>
+                  <div className="flex gap-2 mt-2">
+                    <Input 
+                      placeholder="New sub-folder name" 
+                      value={newFolderName} 
+                      onChange={e => setNewFolderName(e.target.value)}
+                      className="h-8 text-sm"
+                    />
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="h-8" 
+                      onClick={handleCreateFolder}
+                      disabled={isCreatingFolder || !newFolderName.trim()}
+                    >
+                      {isCreatingFolder ? "Creating..." : "Create"}
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <Input 
+                    type="file" 
+                    multiple 
+                    accept="image/*" 
+                    className="hidden" 
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    disabled={isUploading}
+                  />
+                  <Button 
+                    size="lg" 
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                  >
+                    {isUploading ? "Uploading..." : "Select Files"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-neutral-400" />
+                  My Tasks
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {myJobs.length === 0 ? (
+                  <p className="text-sm text-neutral-500 italic py-4 text-center">No assigned tasks.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {myJobs.map((job) => (
+                      <div key={job.id} className={`p-3 rounded-lg border flex flex-col gap-2 ${job.status === 'completed' ? 'bg-green-50 border-green-100' : 'bg-neutral-50 border-neutral-100'}`}>
+                        <div className="flex justify-between gap-2">
+                          <h4 className={`font-medium text-sm ${job.status === 'completed' ? 'line-through text-neutral-500' : 'text-neutral-900'}`}>{job.title}</h4>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-sm uppercase tracking-wide border whitespace-nowrap h-fit ${
+                            job.priority === 'high' ? 'bg-red-50 text-red-600 border-red-200' : 
+                            job.priority === 'low' ? 'bg-neutral-100 text-neutral-600 border-neutral-200' : 
+                            'bg-blue-50 text-blue-600 border-blue-200'
+                          }`}>
+                            {job.priority}
+                          </span>
+                        </div>
+                        {job.description && (
+                          <p className={`text-xs ${job.status === 'completed' ? 'text-neutral-400' : 'text-neutral-600'}`}>{job.description}</p>
+                        )}
+                        <div className="flex justify-between items-center mt-1">
+                          <p className="text-xs text-neutral-400">
+                            {job.dueDate ? `Due: ${new Date(job.dueDate).toLocaleDateString()}` : "No due date"}
+                          </p>
+                          {job.status !== 'completed' ? (
+                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleMarkJobComplete(job.id)}>
+                              Complete
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-green-600 font-medium">Completed</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Recent Uploads */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <FileImage className="w-5 h-5 text-neutral-400" />
+                  Recent Uploads
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {myUploads.length === 0 ? (
+                  <p className="text-sm text-neutral-500 italic py-4 text-center">No uploads yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {myUploads.map((upload, idx) => (
+                      <motion.div 
+                        key={upload.id} 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.05 }}
+                        className="flex items-center justify-between p-3 bg-neutral-50 rounded-lg border border-neutral-100"
+                      >
+                        <div className="flex items-center gap-3 truncate pr-4">
+                          <div className="bg-blue-100 p-2 rounded">
+                            <FileImage className="w-4 h-4 text-blue-600" />
+                          </div>
+                          <span className="text-sm font-medium truncate">{upload.fileName}</span>
+                        </div>
+                        <span className="text-xs text-neutral-400 whitespace-nowrap">
+                          {new Date(upload.uploadedAt).toLocaleDateString()}
+                        </span>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="space-y-6">
+            
+            {/* Personal Stats */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  My Target
+                  <Target className="w-5 h-5 text-neutral-400" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-4xl font-bold tracking-tight mb-2">
+                  {user.uploadedCount} <span className="text-xl font-normal text-neutral-400">/ {user.personalTarget}</span>
+                </div>
+                <Progress value={targetProgress} className="h-2 mb-2" />
+                <p className="text-sm text-neutral-500 mb-4">
+                  {remaining > 0 ? `${remaining} photos remaining` : "Target achieved! 🎉"}
+                </p>
+                <div className="text-xs text-neutral-400 mb-4">
+                  Last synced: {user.lastSyncedAt ? new Date(user.lastSyncedAt).toLocaleString() : 'Never'}
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={syncWithDrive} disabled={isSyncing}>
+                    <RefreshCw className={`w-4 h-4 mr-2 ${isSyncing ? "animate-spin" : ""}`} />
+                    Sync Drive
+                  </Button>
+                  <Button variant="secondary" className="flex-1" asChild>
+                    <Link to="/gallery">
+                      <ImageIcon className="w-4 h-4 mr-2" />
+                      Gallery
+                    </Link>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Team Stats */}
+            <Card className="glass-card text-white border-white/20">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  Team Progress
+                  <Trophy className="w-5 h-5 text-white/70" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-4xl font-bold tracking-tight mb-2">
+                  {globalStats.totalUploaded} <span className="text-xl font-normal text-white/70">/ {globalStats.overallTarget}</span>
+                </div>
+                <Progress value={teamProgress} className="h-2 bg-white/20 [&>div]:bg-white mb-2" />
+                <p className="text-sm text-white/80">
+                  {globalStats.overallTarget - globalStats.totalUploaded > 0 
+                    ? `${globalStats.overallTarget - globalStats.totalUploaded} team photos remaining` 
+                    : "Team target achieved! 🎉"}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-amber-50 border-amber-200">
+              <CardContent className="p-4 flex gap-3 text-sm text-amber-800">
+                <Info className="w-5 h-5 flex-shrink-0" />
+                <p>Photos are automatically organized into your personal Google Drive folder upon upload.</p>
+              </CardContent>
+            </Card>
+
+          </div>
+        </div>
+      </main>
+    </>
+  );
+}
