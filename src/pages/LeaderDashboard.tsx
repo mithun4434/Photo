@@ -13,8 +13,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { BarChart, Bar, ResponsiveContainer, XAxis, Tooltip, LineChart, Line, YAxis, CartesianGrid } from "recharts";
-import { Settings, Users, Target, Activity, Image as ImageIcon, RefreshCw, CalendarDays } from "lucide-react";
-import { format, startOfWeek, subWeeks, isSameWeek } from "date-fns";
+import { Settings, Users, Target, Activity, Image as ImageIcon, RefreshCw, CalendarDays, Clock, Flag, Plus, Calendar as CalendarIcon } from "lucide-react";
+import { format, startOfWeek, subWeeks, isSameWeek, differenceInDays, isSameDay } from "date-fns";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 export default function LeaderDashboard() {
   const { user } = useAuth();
@@ -29,8 +32,19 @@ export default function LeaderDashboard() {
   const [memberTarget, setMemberTarget] = useState("");
   const [memberRole, setMemberRole] = useState("member");
 
-  // Jobs state
+  // Jobs & Phases state
   const [jobs, setJobs] = useState<any[]>([]);
+  const [phases, setPhases] = useState<any[]>([]);
+  const [isCreatingPhase, setIsCreatingPhase] = useState(false);
+  const [editingPhase, setEditingPhase] = useState<any | null>(null);
+  const [newPhase, setNewPhase] = useState({
+    name: "",
+    description: "",
+    startDate: undefined as Date | undefined,
+    endDate: undefined as Date | undefined
+  });
+  const [activeDate, setActiveDate] = useState<Date | undefined>(new Date());
+  
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [newJob, setNewJob] = useState({
     title: "",
@@ -68,6 +82,14 @@ export default function LeaderDashboard() {
       if (data) setJobs(data);
     };
 
+    const fetchPhases = async () => {
+      const { data } = await supabase
+        .from('phases')
+        .select('*')
+        .order('startDate', { ascending: true });
+      if (data) setPhases(data);
+    };
+
     const fetchUploads = async () => {
       const { data } = await supabase
         .from('uploads')
@@ -78,6 +100,7 @@ export default function LeaderDashboard() {
     fetchGlobalStats();
     fetchMembers();
     fetchJobs();
+    fetchPhases();
     fetchUploads();
 
     // Listen to real-time changes
@@ -85,10 +108,10 @@ export default function LeaderDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'teamSettings' }, (payload) => {
         if (payload.new && (payload.new as any).id === 'info') {
           const newData = payload.new as any;
-          setGlobalStats({
-             totalUploaded: newData.totalUploaded || newData.total_uploaded || 0,
-             overallTarget: newData.overallTarget || newData.overall_target || 0
-          });
+          setGlobalStats(prev => ({
+             ...prev,
+             overallTarget: newData.overallTarget || newData.overall_target || prev.overallTarget
+          }));
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
@@ -96,6 +119,9 @@ export default function LeaderDashboard() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, (payload) => {
         fetchJobs();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'phases' }, (payload) => {
+        fetchPhases();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'uploads' }, (payload) => {
         fetchUploads();
@@ -226,6 +252,63 @@ export default function LeaderDashboard() {
       toast.success("Task deleted");
     } catch (err: any) {
       toast.error(err.message || "Failed to delete task");
+    }
+  };
+
+  const handleCreatePhase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPhase.name || !newPhase.startDate || !newPhase.endDate) {
+      toast.error("Name, Start Date, and End Date are required");
+      return;
+    }
+    
+    try {
+      const { error } = await supabase.from('phases').insert({
+        name: newPhase.name,
+        description: newPhase.description,
+        startDate: newPhase.startDate.getTime(),
+        endDate: newPhase.endDate.getTime(),
+        createdBy: user?.id,
+        createdAt: Date.now()
+      });
+      if (error) throw error;
+      toast.success("Phase created successfully");
+      setIsCreatingPhase(false);
+      setNewPhase({ name: "", description: "", startDate: undefined, endDate: undefined });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create phase");
+    }
+  };
+
+  const handleDeletePhase = async (phaseId: string) => {
+    try {
+      const { error } = await supabase.from('phases').delete().eq('id', phaseId);
+      if (error) throw error;
+      toast.success("Phase deleted");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete phase");
+    }
+  };
+
+  const handleUpdatePhase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPhase?.name || !editingPhase?.startDate || !editingPhase?.endDate) {
+      toast.error("Name, Start Date, and End Date are required");
+      return;
+    }
+    
+    try {
+      const { error } = await supabase.from('phases').update({
+        name: editingPhase.name,
+        description: editingPhase.description,
+        startDate: editingPhase.startDate.getTime(),
+        endDate: editingPhase.endDate.getTime(),
+      }).eq('id', editingPhase.id);
+      if (error) throw error;
+      toast.success("Phase updated successfully");
+      setEditingPhase(null);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update phase");
     }
   };
 
@@ -497,8 +580,8 @@ export default function LeaderDashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                     <XAxis dataKey="name" fontSize={12} tickLine={false} axisLine={false} />
-                    <Tooltip cursor={{ fill: 'rgba(0,0,0,0.05)' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                    <Bar dataKey="photos" fill="#fff" radius={[4, 4, 0, 0]} />
+                    <Tooltip cursor={{ fill: 'rgba(0,0,0,0.05)' }} contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', color: '#000' }} itemStyle={{ color: '#000' }} labelStyle={{ color: '#000' }} />
+                    <Bar dataKey="photos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </CardContent>
@@ -576,7 +659,313 @@ export default function LeaderDashboard() {
               </Table>
             </CardContent>
           </Card>
+          <Card className="glass-card text-white border-white/20">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <CalendarDays className="w-5 h-5 text-white/70" />
+                Calendar & Upcoming
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6">
+                <div className="bg-white/5 rounded-xl border border-white/10 p-2 w-fit h-fit">
+                  <Calendar
+                    mode="single"
+                    selected={activeDate}
+                    onSelect={setActiveDate}
+                    className="text-white"
+                    modifiers={{
+                      hasTask: (date) => jobs.some(j => j.dueDate && isSameDay(new Date(j.dueDate), date)),
+                      hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate)
+                    }}
+                    modifiersClassNames={{
+                      hasTask: "bg-blue-500/20 text-blue-200 font-bold",
+                      hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4"
+                    }}
+                  />
+                </div>
+                <div className="space-y-4">
+                  <h4 className="font-medium text-white/90">Events for {activeDate ? format(activeDate, "MMM d, yyyy") : "Selected Date"}</h4>
+                  
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+                    {/* Active Phases */}
+                    {phases.filter(p => activeDate && p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).map(p => {
+                      const daysLeft = differenceInDays(new Date(p.endDate), activeDate || new Date());
+                      return (
+                        <div key={p.id} className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 flex flex-col gap-2">
+                          <div className="flex justify-between items-start">
+                            <h5 className="font-semibold text-amber-200">{p.name}</h5>
+                            <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 whitespace-nowrap">
+                              {daysLeft >= 0 ? `${daysLeft} days left` : "Ended"}
+                            </span>
+                          </div>
+                          {p.description && <p className="text-xs text-amber-100/70">{p.description}</p>}
+                          <div className="text-[10px] text-amber-200/50">
+                            {format(new Date(p.startDate), "MMM d")} - {format(new Date(p.endDate), "MMM d, yyyy")}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* Jobs due */}
+                    {jobs.filter(j => activeDate && j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).map(j => (
+                      <div key={j.id} className="p-3 rounded-lg border border-blue-500/30 bg-blue-500/10 flex flex-col gap-1">
+                        <div className="flex justify-between items-start">
+                          <h5 className="font-semibold text-blue-200">{j.title}</h5>
+                          <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
+                            {j.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-blue-100/70">Assignee: {j.users?.name || j.users?.email}</p>
+                      </div>
+                    ))}
+
+                    {phases.filter(p => activeDate && p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).length === 0 &&
+                     jobs.filter(j => activeDate && j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && (
+                      <div className="text-white/50 text-sm text-center py-4">No events on this day.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
+
+        {/* Phases Management Section */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2 border-b mb-4">
+            <div className="space-y-1">
+              <CardTitle className="text-xl flex items-center gap-2"><Flag className="w-5 h-5 text-primary" /> Phases Management</CardTitle>
+              <p className="text-sm text-neutral-500">Manage project phases and timelines.</p>
+            </div>
+            <Dialog open={isCreatingPhase} onOpenChange={setIsCreatingPhase}>
+              <DialogTrigger asChild>
+                <Button className="gap-2"><Plus className="w-4 h-4"/> Add Phase</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add New Phase</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={handleCreatePhase} className="space-y-4 pt-4">
+                  <div className="space-y-2">
+                    <Label>Phase Name</Label>
+                    <Input 
+                      value={newPhase.name} 
+                      onChange={(e) => setNewPhase({...newPhase, name: e.target.value})} 
+                      required 
+                      placeholder="e.g. Phase 1: Planning"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Description (Optional)</Label>
+                    <Input 
+                      value={newPhase.description} 
+                      onChange={(e) => setNewPhase({...newPhase, description: e.target.value})} 
+                      placeholder="Phase details..."
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2 flex flex-col">
+                      <Label>Start Date</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant={"outline"}
+                            className={cn(
+                              "w-full pl-3 text-left font-normal",
+                              !newPhase.startDate && "text-muted-foreground"
+                            )}
+                          >
+                            {newPhase.startDate ? format(newPhase.startDate, "PPP") : <span>Pick a date</span>}
+                            <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={newPhase.startDate}
+                            onSelect={(d) => setNewPhase({...newPhase, startDate: d})}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className="space-y-2 flex flex-col">
+                      <Label>End Date</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant={"outline"}
+                            className={cn(
+                              "w-full pl-3 text-left font-normal",
+                              !newPhase.endDate && "text-muted-foreground"
+                            )}
+                          >
+                            {newPhase.endDate ? format(newPhase.endDate, "PPP") : <span>Pick a date</span>}
+                            <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={newPhase.endDate}
+                            onSelect={(d) => setNewPhase({...newPhase, endDate: d})}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+                  <Button type="submit" className="w-full">Create Phase</Button>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </CardHeader>
+          <CardContent>
+            {phases.length === 0 ? (
+              <div className="text-center py-8 text-neutral-500 italic">No phases established yet.</div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {phases.map(phase => {
+                  const now = Date.now();
+                  const isPast = now > phase.endDate;
+                  const isActive = now >= phase.startDate && now <= phase.endDate;
+                  const daysLeft = differenceInDays(new Date(phase.endDate), new Date());
+                  const totalDays = differenceInDays(new Date(phase.endDate), new Date(phase.startDate)) || 1;
+                  const passedDays = differenceInDays(new Date(), new Date(phase.startDate));
+                  const progress = Math.min(Math.max((passedDays / totalDays) * 100, 0), 100);
+
+                  return (
+                    <Card key={phase.id} className={cn("relative overflow-hidden", isActive ? "border-primary" : "border-neutral-200")}>
+                      {isActive && <div className="absolute top-0 right-0 w-2 h-full bg-primary" />}
+                      <CardHeader className="pb-3">
+                        <div className="flex justify-between items-start">
+                          <CardTitle className="text-base">{phase.name}</CardTitle>
+                          <div className="flex items-center gap-1">
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              className="h-6 px-2 text-xs text-blue-500 hover:text-blue-600 hover:bg-blue-50" 
+                              onClick={() => {
+                                setEditingPhase({
+                                  ...phase,
+                                  startDate: new Date(phase.startDate),
+                                  endDate: new Date(phase.endDate)
+                                });
+                              }}
+                            >
+                              Edit
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePhase(phase.id)}>
+                              &times;
+                            </Button>
+                          </div>
+                        </div>
+                        {phase.description && <p className="text-xs text-neutral-500">{phase.description}</p>}
+                      </CardHeader>
+                      <CardContent className="space-y-3 pb-4">
+                        <div className="flex items-center text-xs text-neutral-500 gap-1.5">
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>{format(new Date(phase.startDate), "MMM d")} - {format(new Date(phase.endDate), "MMM d, yyyy")}</span>
+                        </div>
+                        
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs font-medium">
+                            <span className={cn(isActive ? "text-primary" : "text-neutral-500")}>
+                              {isActive ? `${daysLeft} days remaining` : isPast ? "Completed" : "Upcoming"}
+                            </span>
+                            <span className="text-neutral-400">{Math.round(progress)}%</span>
+                          </div>
+                          <Progress value={progress} className="h-1.5" />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+
+            <Dialog open={!!editingPhase} onOpenChange={(open) => !open && setEditingPhase(null)}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Edit Phase</DialogTitle>
+                </DialogHeader>
+                {editingPhase && (
+                  <form onSubmit={handleUpdatePhase} className="space-y-4 pt-4">
+                    <div className="space-y-2">
+                      <Label>Phase Name</Label>
+                      <Input 
+                        value={editingPhase.name || ""} 
+                        onChange={(e) => setEditingPhase({...editingPhase, name: e.target.value})} 
+                        required 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Description</Label>
+                      <Input 
+                        value={editingPhase.description || ""} 
+                        onChange={(e) => setEditingPhase({...editingPhase, description: e.target.value})} 
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2 flex flex-col">
+                        <Label>Start Date</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant={"outline"}
+                              className={cn(
+                                "w-full pl-3 text-left font-normal",
+                                !editingPhase.startDate && "text-muted-foreground"
+                              )}
+                            >
+                              {editingPhase.startDate ? format(new Date(editingPhase.startDate), "PPP") : <span>Pick a date</span>}
+                              <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="single"
+                              selected={editingPhase.startDate ? new Date(editingPhase.startDate) : undefined}
+                              onSelect={(d) => setEditingPhase({...editingPhase, startDate: d})}
+                              initialFocus
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-2 flex flex-col">
+                        <Label>End Date</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant={"outline"}
+                              className={cn(
+                                "w-full pl-3 text-left font-normal",
+                                !editingPhase.endDate && "text-muted-foreground"
+                              )}
+                            >
+                              {editingPhase.endDate ? format(new Date(editingPhase.endDate), "PPP") : <span>Pick a date</span>}
+                              <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="single"
+                              selected={editingPhase.endDate ? new Date(editingPhase.endDate) : undefined}
+                              onSelect={(d) => setEditingPhase({...editingPhase, endDate: d})}
+                              initialFocus
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+                    <Button type="submit" className="w-full">Update Phase</Button>
+                  </form>
+                )}
+              </DialogContent>
+            </Dialog>            
+          </CardContent>
+        </Card>
 
         {/* Task Management Section */}
         <Card>

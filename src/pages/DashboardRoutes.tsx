@@ -4,6 +4,8 @@ import MemberDashboard from "./MemberDashboard";
 import LeaderDashboard from "./LeaderDashboard";
 import Gallery from "./Gallery";
 
+import { ActivePhaseFloat } from "../components/ActivePhaseFloat";
+
 export default function DashboardRoutes() {
   const { user } = useAuth();
 
@@ -27,6 +29,7 @@ export default function DashboardRoutes() {
         <div className="absolute top-[20%] left-[20%] w-[30vw] h-[30vw] rounded-full bg-white/5 blur-[100px]"></div>
         <div className="absolute bottom-[20%] right-[30%] w-[40vw] h-[40vw] rounded-full bg-slate-400/5 blur-[120px]"></div>
       </div>
+      <ActivePhaseFloat />
       <Routes>
         <Route path="/" element={isLeader ? <LeaderDashboard /> : <MemberDashboard />} />
         <Route path="/profile" element={<MemberDashboard />} />

@@ -6,10 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter }
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { format, isSameDay } from "date-fns";
+import { cn } from "@/lib/utils";
+import { Calendar } from "@/components/ui/calendar";
 import { toast } from "sonner";
-import { UploadCloud, FileImage, Target, Trophy, Info, RefreshCw, Image as ImageIcon, CheckCircle2, Circle } from "lucide-react";
+import { UploadCloud, FileImage, Target, Trophy, Info, RefreshCw, Image as ImageIcon, CheckCircle2, Circle, CalendarDays, Flag, Clock } from "lucide-react";
 import * as motion from "motion/react-client";
 import { Link } from "react-router";
+import { AuthImage } from "@/components/AuthImage";
 
 export default function MemberDashboard() {
   const { user } = useAuth();
@@ -18,8 +22,11 @@ export default function MemberDashboard() {
   const [newFolderName, setNewFolderName] = useState("");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [globalStats, setGlobalStats] = useState({ totalUploaded: 0, overallTarget: 0 });
+  const [members, setMembers] = useState<any[]>([]);
   const [myUploads, setMyUploads] = useState<any[]>([]);
   const [myJobs, setMyJobs] = useState<any[]>([]);
+  const [phases, setPhases] = useState<any[]>([]);
+  const [activeDate, setActiveDate] = useState<Date | undefined>(new Date());
   const [isUploading, setIsUploading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   
@@ -80,9 +87,15 @@ export default function MemberDashboard() {
       }
     };
 
+    const fetchPhases = async () => {
+      const { data } = await supabase.from('phases').select('*').order('startDate', { ascending: true });
+      if (data) setPhases(data);
+    };
+
     fetchGlobalStats();
     fetchMyUploads();
     fetchMyJobs();
+    fetchPhases();
     fetchFolders();
 
     // Listen to real-time changes
@@ -92,7 +105,7 @@ export default function MemberDashboard() {
           const newData = payload.new as any;
           setGlobalStats(prev => ({
              ...prev,
-             overallTarget: newData.overallTarget || newData.overall_target || 0
+             overallTarget: newData.overallTarget || newData.overall_target || prev.overallTarget
           }));
         }
       })
@@ -101,6 +114,9 @@ export default function MemberDashboard() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'uploads', filter: `userId=eq.${user?.id}` }, (payload) => {
         fetchMyUploads(); // Refresh to maintain order and limit
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'phases' }, (payload) => {
+        fetchPhases();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `assignedTo=eq.${user.id}` }, (payload) => {
         fetchMyJobs();
@@ -367,24 +383,19 @@ export default function MemberDashboard() {
                 {myUploads.length === 0 ? (
                   <p className="text-sm text-neutral-500 italic py-4 text-center">No uploads yet.</p>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                     {myUploads.map((upload, idx) => (
                       <motion.div 
                         key={upload.id} 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
                         transition={{ delay: idx * 0.05 }}
-                        className="flex items-center justify-between p-3 bg-neutral-50 rounded-lg border border-neutral-100"
+                        className="group relative aspect-square rounded-xl overflow-hidden bg-neutral-100 border border-neutral-200"
                       >
-                        <div className="flex items-center gap-3 truncate pr-4">
-                          <div className="bg-blue-100 p-2 rounded">
-                            <FileImage className="w-4 h-4 text-blue-600" />
-                          </div>
-                          <span className="text-sm font-medium truncate">{upload.fileName}</span>
+                        <AuthImage fileId={upload.driveFileId} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 pointer-events-none">
+                          <span className="text-white text-xs font-medium truncate">{upload.fileName}</span>
                         </div>
-                        <span className="text-xs text-neutral-400 whitespace-nowrap">
-                          {new Date(upload.uploadedAt).toLocaleDateString()}
-                        </span>
                       </motion.div>
                     ))}
                   </div>
@@ -447,6 +458,63 @@ export default function MemberDashboard() {
                     ? `${globalStats.overallTarget - globalStats.totalUploaded} team photos remaining` 
                     : "Team target achieved! 🎉"}
                 </p>
+              </CardContent>
+            </Card>
+
+            {/* Calendar View */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  Calendar
+                  <CalendarDays className="w-5 h-5 text-neutral-400" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6">
+                  <div className="flex justify-center border rounded-lg p-2 w-fit h-fit overflow-x-auto">
+                    <Calendar
+                      mode="single"
+                      selected={activeDate}
+                      onSelect={setActiveDate}
+                      modifiers={{
+                        hasTask: (date) => myJobs.some(j => j.dueDate && isSameDay(new Date(j.dueDate), date)),
+                        hasPhase: (date) => phases.some(p => p.startDate && p.endDate && date.getTime() >= p.startDate && date.getTime() <= p.endDate)
+                      }}
+                      modifiersClassNames={{
+                        hasTask: "bg-blue-100 text-blue-700 font-bold",
+                        hasPhase: "underline decoration-amber-500 decoration-2 underline-offset-4"
+                      }}
+                    />
+                  </div>
+                  {activeDate && (
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-medium text-neutral-700">{format(activeDate, "MMM d, yyyy")}</h4>
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                        {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).map(p => (
+                          <div key={p.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
+                            <span className="font-semibold text-amber-800">{p.name}</span>
+                            <p className="text-amber-700 whitespace-pre-wrap mt-1">{p.description}</p>
+                          </div>
+                        ))}
+                        {myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).map(j => (
+                          <div key={j.id} className="text-xs p-2 rounded bg-blue-50 border border-blue-100 flex items-start justify-between gap-2">
+                            <div>
+                              <span className="font-semibold text-blue-800 block">{j.title}</span>
+                              <span className="uppercase text-[9px] px-1 py-0.5 rounded bg-blue-200 text-blue-700 inline-block mt-1">{j.status}</span>
+                            </div>
+                            {j.status !== 'completed' && (
+                              <Button size="sm" variant="outline" className="h-6 text-[10px] px-2 whitespace-nowrap" onClick={() => handleMarkJobComplete(j.id)}>Done</Button>
+                            )}
+                          </div>
+                        ))}
+                        {phases.filter(p => p.startDate && p.endDate && activeDate.getTime() >= p.startDate && activeDate.getTime() <= p.endDate).length === 0 &&
+                         myJobs.filter(j => j.dueDate && isSameDay(new Date(j.dueDate), activeDate)).length === 0 && (
+                          <div className="text-neutral-400 text-xs italic">No events or tasks.</div>
+                         )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
 
