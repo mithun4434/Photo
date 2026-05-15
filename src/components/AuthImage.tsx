@@ -21,7 +21,7 @@ export function AuthImage({
         const token = sessionData?.session?.access_token;
         if (!token) return;
 
-        const res = await fetch(`/api/drive-file/${fileId}?t=${Date.now()}`, {
+        const res = await fetch(`/api/drive-file/${fileId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 

@@ -422,6 +422,9 @@ async function startServer() {
     try {
        const drive = await getDriveClient();
        const response = await drive.files.get({ fileId: req.params.fileId, alt: 'media' }, { responseType: 'stream' });
+       if (response.headers['content-type']) {
+          res.setHeader('Content-Type', response.headers['content-type']);
+       }
        response.data.pipe(res);
     } catch (e) {
        res.status(500).send("File fetch error");
@@ -569,6 +572,13 @@ async function startServer() {
       }
 
       if (uploadCount > 0) {
+        // Increment the user's uploadedCount
+        const currentCount = userData.uploadedCount || userData.uploaded_count || 0;
+        await supabase.from('users').update({ 
+           uploadedCount: currentCount + uploadCount,
+           uploaded_count: currentCount + uploadCount
+        }).eq('id', uid);
+        
         // Just run recalculate directly to ensure consistency
         await recalculateTeamTotal();
       }

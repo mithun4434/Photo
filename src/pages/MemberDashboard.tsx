@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter }
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format, isSameDay } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
@@ -38,15 +39,15 @@ export default function MemberDashboard() {
     // Fetch initial data
     const fetchGlobalStats = async () => {
       const { data, error } = await supabase.from('teamSettings').select('*').eq('id', 'info').single();
-      const { data: usersData } = await supabase.from('users').select('uploadedCount, uploaded_count');
+      const { data: usersData } = await supabase.from('users').select('*').order('name');
       const total = (usersData || []).reduce((acc, u) => acc + (u.uploadedCount || u.uploaded_count || 0), 0);
       
-      if (data) {
-         setGlobalStats(prev => ({
-           totalUploaded: total,
-           overallTarget: data.overallTarget || data.overall_target || 0
-         }));
-      }
+      if (usersData) setMembers(usersData);
+
+      setGlobalStats(prev => ({
+        totalUploaded: total,
+        overallTarget: data ? (data.overallTarget || data.overall_target || 0) : prev.overallTarget
+      }));
     };
     
     const fetchMyUploads = async () => {
@@ -243,8 +244,14 @@ export default function MemberDashboard() {
 
   if (!user) return null;
 
-  const targetProgress = user.personalTarget > 0 ? Math.min((user.uploadedCount / user.personalTarget) * 100, 100) : 0;
-  const remaining = Math.max(user.personalTarget - user.uploadedCount, 0);
+  const me = members.find(m => m.id === user.id) || user;
+  const myUploadedCount = me.uploadedCount || me.uploaded_count || 0;
+  const myPersonalTarget = me.personalTarget || me.personal_target || 100;
+  const myLastSyncedAt = me.lastSyncedAt || me.last_synced_at;
+  const isLeader = user.role === "leader" || user.role === "co-leader" || user.role === "co-lead";
+
+  const targetProgress = myPersonalTarget > 0 ? Math.min((myUploadedCount / myPersonalTarget) * 100, 100) : 0;
+  const remaining = Math.max(myPersonalTarget - myUploadedCount, 0);
 
   const teamProgress = globalStats.overallTarget > 0 ? Math.min((globalStats.totalUploaded / globalStats.overallTarget) * 100, 100) : 0;
 
@@ -416,14 +423,14 @@ export default function MemberDashboard() {
               </CardHeader>
               <CardContent>
                 <div className="text-4xl font-bold tracking-tight mb-2">
-                  {user.uploadedCount} <span className="text-xl font-normal text-neutral-400">/ {user.personalTarget}</span>
+                  {myUploadedCount} <span className="text-xl font-normal text-neutral-400">/ {myPersonalTarget}</span>
                 </div>
                 <Progress value={targetProgress} className="h-2 mb-2" />
                 <p className="text-sm text-neutral-500 mb-4">
                   {remaining > 0 ? `${remaining} photos remaining` : "Target achieved! 🎉"}
                 </p>
                 <div className="text-xs text-neutral-400 mb-4">
-                  Last synced: {user.lastSyncedAt ? new Date(user.lastSyncedAt).toLocaleString() : 'Never'}
+                  Last synced: {myLastSyncedAt ? new Date(myLastSyncedAt).toLocaleString() : 'Never'}
                 </div>
                 <div className="flex gap-2">
                   <Button variant="outline" className="flex-1" onClick={syncWithDrive} disabled={isSyncing}>
@@ -460,6 +467,67 @@ export default function MemberDashboard() {
                 </p>
               </CardContent>
             </Card>
+
+            {isLeader && (
+              <Card>
+                <CardHeader className="flex flex-row justify-between items-center pb-2">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Target className="w-5 h-5 text-neutral-400" />
+                    Team Member Progress
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="rounded-md border overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Member</TableHead>
+                          <TableHead>Progress</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {members.map((member) => {
+                          const uploaded = member.uploadedCount || member.uploaded_count || 0;
+                          const target = member.personalTarget || member.personal_target || 100;
+                          const perc = target > 0 ? Math.min((uploaded / target) * 100, 100) : 0;
+                          
+                          return (
+                            <TableRow key={member.id}>
+                              <TableCell className="font-medium whitespace-nowrap">
+                                <div className="flex flex-col">
+                                  <span>
+                                    {member.name || "No Name"}
+                                    {member.role !== 'member' && (
+                                       <span className="ml-2 text-[9px] uppercase font-bold px-1.5 py-0.5 rounded-full bg-primary/20 text-primary">
+                                         {member.role}
+                                       </span>
+                                    )}
+                                  </span>
+                                </div>
+                              </TableCell>
+                              <TableCell className="w-[150px] sm:w-[200px]">
+                                <div className="flex flex-col gap-1.5">
+                                  <span className="text-xs text-neutral-500 whitespace-nowrap">{uploaded} / {target} photos</span>
+                                  <Progress value={perc} className="h-1.5" />
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                {perc >= 100 ? (
+                                  <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded font-medium whitespace-nowrap">Target hit</span>
+                                ) : (
+                                  <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded font-medium whitespace-nowrap">Uploading</span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Calendar View */}
             <Card>
